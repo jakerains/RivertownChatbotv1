@@ -5,6 +5,8 @@ import json
 import logging
 from dynamo_utils import get_customer_orders, init_dynamodb
 import re
+import requests
+from typing import Dict, Any, Tuple
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -35,12 +37,12 @@ def init_bedrock():
     
     return bedrock_agent_runtime, bedrock_runtime
 
-def extract_name_from_prompt(prompt: str) -> tuple[str, str] | None:
+def extract_customer_name(prompt: str) -> tuple[str, str] | None:
     """Extract first and last name from prompt using regex"""
-    # Look for patterns like "show me jake rains orders" or "jake rains orders"
     patterns = [
-        r"(?:show me|get|find|display) ([A-Za-z]+)\s+([A-Za-z]+)(?:'s)? (?:order|orders)",
-        r"([A-Za-z]+)\s+([A-Za-z]+)(?:'s)? (?:order|orders)",
+        r"show\s+(?:me\s+)?(?:the\s+)?(?:orders?\s+(?:for|of)\s+)?([a-zA-Z]+)\s+([a-zA-Z]+)",
+        r"(?:what\s+(?:are|were)\s+)?([a-zA-Z]+)\s+([a-zA-Z]+)(?:'s)?\s+orders?",
+        r"find\s+(?:the\s+)?orders?\s+(?:for|of)\s+([a-zA-Z]+)\s+([a-zA-Z]+)",
     ]
     
     for pattern in patterns:
@@ -50,10 +52,11 @@ def extract_name_from_prompt(prompt: str) -> tuple[str, str] | None:
     return None
 
 def format_order_table(orders: list) -> str:
-    """Format orders into a clean markdown table for Streamlit"""
-    # Create markdown table header
-    table = "\n| Order ID | Product | Quantity | Date | Total |\n"
-    table += "|----------|----------|-----------|------|--------|\n"
+    """Format orders into a clean markdown table with emojis"""
+    # Create markdown table header with emojis
+    table = "\n📦 **Order History**\n"
+    table += "| 🔖 Order ID | ⚪ Product | 🔢 Quantity | 📅 Date | 💰 Total |\n"
+    table += "|------------|------------|-------------|---------|----------|\n"
     
     # Add each order as a row
     for order in orders:
@@ -65,40 +68,48 @@ def format_order_table(orders: list) -> str:
     
     return table
 
-def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledge_base_id="6U5LGL6AYD"):
+def get_response_with_rag(agent_runtime_client, runtime_client, prompt, phone_number=None, dynamodb=None, knowledge_base_id="6U5LGL6AYD"):
     """Gets a streaming response using RAG with Bedrock Knowledge Base and order lookup"""
     try:
-        # First, check if this is an order-related query
-        name_match = extract_name_from_prompt(prompt)
-        
-        if any(keyword in prompt.lower() for keyword in ['order', 'purchase', 'bought']) and name_match:
+        # 1. First priority: Check for order lookup request
+        name_match = extract_customer_name(prompt)
+        if name_match and dynamodb:
             first_name, last_name = name_match
-            logger.info(f"Order query detected for {first_name} {last_name}")
-            
-            # Initialize DynamoDB and get orders
-            dynamodb = init_dynamodb()
             orders = get_customer_orders(dynamodb, first_name, last_name)
             
             if orders:
-                response = (
-                    f"### 📦 Order History for {first_name} {last_name}\n"
-                    f"{format_order_table(orders)}\n"
-                    f"*Total Orders: {len(orders)}*"
-                )
-                yield response
-                return  # Exit here if it's an order query
+                order_table = format_order_table(orders)
+                yield f"🔍 Here are the orders for {first_name} {last_name}:\n{order_table}"
+                return
             else:
-                yield f"I couldn't find any orders for {first_name} {last_name}."
-                return  # Exit here if no orders found
+                yield f"❌ I couldn't find any orders for {first_name} {last_name}."
+                return
 
-        # Only proceed with RAG if it's not an order query
-        logger.info(f"Processing regular RAG query: {prompt}")
+        # 2. Second priority: Handle customer service calls
+        cs_keywords = [
+            'speak to someone',
+            'talk to a person', 
+            'customer service',
+            'representative',
+            'speak to a human',
+            'talk to someone',
+            'call me',
+            'contact me'
+        ]
         
-        logger.info(f"Starting RAG process for prompt: {prompt}")
-        logger.info(f"Using knowledge base ID: {knowledge_base_id}")
+        is_cs_request = any(keyword in prompt.lower() for keyword in cs_keywords)
+        is_just_numbers = sum(c.isdigit() for c in prompt) >= 10
         
-        # First try a simple retrieve to debug
-        logger.debug("Attempting direct retrieve first...")
+        if is_cs_request or phone_number or is_just_numbers:
+            cs_response = handle_customer_service_request(prompt, phone_number)
+            if cs_response:
+                yield cs_response
+                return
+
+        # 3. Fall back to RAG if no specific handlers matched
+        logger.info(f"No specific handlers matched, falling back to RAG for: {prompt}")
+        
+        # Get retrieved passages from knowledge base
         retrieve_response = agent_runtime_client.retrieve(
             knowledgeBaseId=knowledge_base_id,
             retrievalQuery={
@@ -111,19 +122,9 @@ def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledg
             }
         )
         
-        # Log the raw retrieve response
-        logger.debug(f"Raw retrieve response: {json.dumps(retrieve_response, default=str)}")
-        
-        # Extract and log retrieved results
-        retrieved_results = retrieve_response.get('retrievalResults', [])
-        logger.info(f"Number of retrieved results: {len(retrieved_results)}")
-        
+        # Extract and combine retrieved passages
         retrieved_passages = []
-        for result in retrieved_results:
-            # Log the full structure of each result
-            logger.debug(f"Result structure: {json.dumps(result, default=str)}")
-            
-            # Try different possible paths to content
+        for result in retrieve_response.get('retrievalResults', []):
             content = (
                 result.get('content', {}).get('text', '') or
                 result.get('content', '') or
@@ -131,18 +132,10 @@ def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledg
             )
             if content:
                 retrieved_passages.append(content)
-                logger.info(f"Retrieved passage: {content}")
-            else:
-                logger.warning(f"Could not extract content from result: {result}")
         
-        # Log the final context
         context = "\n".join(retrieved_passages)
-        logger.info(f"Combined context being sent to model: {context}")
         
-        if not context:
-            logger.warning("No context was retrieved from the knowledge base!")
-            
-        # Format prompt with a more natural, enthusiastic tone
+        # Format prompt for the model
         formatted_prompt = f"""Human: You are RiverTown's enthusiastic product specialist! You love talking about our artisanal creations and have a warm, friendly personality. You're passionate about craftsmanship and excited to share details about our products.
 
 Remember to:
@@ -187,3 +180,88 @@ Assistant:"""
     except Exception as e:
         logger.error(f"Error in response generation: {str(e)}", exc_info=True)
         yield "I apologize, but I encountered an error while processing your request."
+
+def init_bland():
+    """Initialize Bland API configuration"""
+    load_dotenv('.env.local')
+    return {
+        'headers': {
+            'Authorization': os.getenv('BLAND_API_KEY')
+        },
+        'base_url': 'https://us.api.bland.ai/v1'
+    }
+
+def extract_phone_number(prompt: str) -> str | None:
+    """Extract phone number from prompt using regex"""
+    # Clean the input string of any whitespace and common separators
+    cleaned_number = ''.join(filter(str.isdigit, prompt))
+    
+    # If we have exactly 10 digits, assume it's a valid US phone number
+    if len(cleaned_number) == 10:
+        return f"+1{cleaned_number}"
+    
+    # If we have 11 digits and it starts with 1, also valid
+    if len(cleaned_number) == 11 and cleaned_number.startswith('1'):
+        return f"+{cleaned_number}"
+    
+    # For any other length, return None
+    return None
+
+def handle_customer_service_request(prompt: str, phone_number: str = None) -> str:
+    """Handles customer service related requests and initiates calls if needed"""
+    try:
+        # Check if this is a customer service request or just a phone number
+        is_cs_request = any(keyword in prompt.lower() for keyword in [
+            'speak to someone', 'talk to a person', 'customer service',
+            'representative', 'speak to a human', 'talk to someone',
+            'call me', 'contact me'
+        ])
+        is_just_numbers = sum(c.isdigit() for c in prompt) >= 10
+        
+        # Initial CS request
+        if is_cs_request:
+            return ("I'd be happy to have Sara, our customer service specialist, give you a call! "
+                   "What's the best phone number to reach you at? You can share it in any format "
+                   "like: 123-456-7890 or (123) 456-7890")
+        
+        # Handle phone number input
+        if is_just_numbers:
+            formatted_phone = f"+1{''.join(filter(str.isdigit, prompt))[-10:]}"
+            
+            # Initiate the call
+            data = {
+                "phone_number": formatted_phone,
+                "task": """You are Sara from Rivertown Ball Company following up on a chat conversation. 
+                Start the call with: "Hi, this is Sara from Rivertown Ball Company!"
+                Be warm, friendly and helpful while assisting with their questions about our artisanal wooden balls.
+                Make them feel valued and excited about our products!""",
+                "model": "turbo",
+                "voice": "Alexa",
+                "max_duration": 12,
+                "wait_for_greeting": True,
+                "temperature": 0.8
+            }
+            
+            bland_config = init_bland()
+            response = requests.post(
+                f"{bland_config['base_url']}/calls",
+                json=data,
+                headers=bland_config['headers']
+            )
+            
+            if response.status_code == 200:
+                return (f"Perfect! Sara will be calling you right now at " 
+                       f"{formatted_phone[-10:-7]}-{formatted_phone[-7:-4]}-{formatted_phone[-4:]}. "
+                       "She's looking forward to helping you with any questions you have about our "
+                       "artisanal wooden balls!")
+            else:
+                logger.error(f"Failed to initiate customer service call: {response.text}")
+                return ("I apologize, but I'm having trouble connecting with Sara at the moment. "
+                       "Please try again in a few minutes or call us directly at (719) 266-2837")
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error in customer service request handling: {str(e)}", exc_info=True)
+        return ("I apologize, but I'm experiencing technical difficulties arranging the call. "
+               "Please contact our customer service directly at (719) 266-2837")
