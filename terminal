@@ -1,0 +1,22 @@
+# Create directories
+New-Item -ItemType Directory -Path "app\utils" -Force
+
+# Move Python files
+Move-Item -Path "bedrock_utils.py" -Destination "app\utils\" -Force
+Move-Item -Path "dynamo_utils.py" -Destination "app\utils\" -Force
+
+# Install npm packages
+npm install @aws-sdk/client-bedrock-runtime @aws-sdk/client-bedrock @aws-sdk/client-dynamodb
+npm install @vercel/analytics
+npm install @radix-ui/react-scroll-area
+npm install @radix-ui/react-slot
+npm install class-variance-authority
+npm install clsx
+npm install lucide-react
+npm install tailwind-merge
+npm install tailwindcss-animate
+npm install next react react-dom @types/react @types/node typescript
+
+# Initialize shadcn-ui and add components
+npx shadcn-ui@latest init
+npx shadcn-ui@latest add button input card scroll-area
