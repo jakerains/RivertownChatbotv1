@@ -2,6 +2,14 @@ import boto3
 import os
 from dotenv import load_dotenv
 import json
+import logging
+
+# Configure logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 def init_bedrock():
     """Initialize and return Bedrock clients"""
@@ -25,47 +33,69 @@ def init_bedrock():
     
     return bedrock_agent_runtime, bedrock_runtime
 
-def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledge_base_id="A2QCDWSKKV"):
+def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledge_base_id="6U5LGL6AYD"):
     """
     Gets a streaming response using RAG with Bedrock Knowledge Base
     """
     try:
-        # Complete system prompt
-        system_prompt = """You are a friendly and knowledgeable question-answering agent for the Rivertown Ball Company. Your mission is to assist users by answering their questions based on a set of provided search results. Your goal is to provide accurate, helpful, and engaging answers. Remember, your personality shines through—you are warm, approachable, and helpful, while also being precise and trustworthy. Also note the company sells High end exotic designer wooden craft balls. while we do have many different designs, styles, and options. We do not make sports balls. 
-
-I will provide you with a set of search results that may contain the information needed to answer the user's question. The user will ask you a question, and it's your job to answer it using only the information from the search results. If the search results do not contain the information needed to answer the question, let the user know politely that you don't know the answer to their question.
-
-Don't let the user know you searched for the answer, just present it as you knew it the entire time as fact. Do not ever cite any sources.
-
-If the user asserts something as a fact, don't automatically accept it—double-check it against the search results to make sure it's accurate. Your job is to be both supportive and trustworthy, so validating information is key."""
+        logger.info(f"Starting RAG process for prompt: {prompt}")
+        logger.info(f"Using knowledge base ID: {knowledge_base_id}")
         
-        # Query the knowledge base using bedrock-agent-runtime
-        retrieve_response = agent_runtime_client.retrieve_and_generate(
-            input={
-                'text': prompt
+        # First try a simple retrieve to debug
+        logger.debug("Attempting direct retrieve first...")
+        retrieve_response = agent_runtime_client.retrieve(
+            knowledgeBaseId=knowledge_base_id,
+            retrievalQuery={
+                "text": prompt
             },
-            retrieveAndGenerateConfiguration={
-                'type': 'KNOWLEDGE_BASE',
-                'knowledgeBaseConfiguration': {
-                    'knowledgeBaseId': knowledge_base_id,
-                    'modelArn': "anthropic.claude-instant-v1",
-                    'retrievalConfiguration': {
-                        'vectorSearchConfiguration': {
-                            'numberOfResults': 3
-                        }
-                    }
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {
+                    "numberOfResults": 3
                 }
             }
         )
-
-        # Extract retrieved passages
-        retrieved_passages = []
-        for result in retrieve_response.get('retrievalResults', []):
-            retrieved_passages.append(result.get('content', ''))
         
-        # Format prompt
+        # Log the raw retrieve response
+        logger.debug(f"Raw retrieve response: {json.dumps(retrieve_response, default=str)}")
+        
+        # Extract and log retrieved results
+        retrieved_results = retrieve_response.get('retrievalResults', [])
+        logger.info(f"Number of retrieved results: {len(retrieved_results)}")
+        
+        retrieved_passages = []
+        for result in retrieved_results:
+            # Log the full structure of each result
+            logger.debug(f"Result structure: {json.dumps(result, default=str)}")
+            
+            # Try different possible paths to content
+            content = (
+                result.get('content', {}).get('text', '') or
+                result.get('content', '') or
+                ''
+            )
+            if content:
+                retrieved_passages.append(content)
+                logger.info(f"Retrieved passage: {content}")
+            else:
+                logger.warning(f"Could not extract content from result: {result}")
+        
+        # Log the final context
         context = "\n".join(retrieved_passages)
-        formatted_prompt = f"\n\nHuman: {system_prompt}\n\nContext: {context}\n\nHuman: {prompt}\n\nAssistant:"
+        logger.info(f"Combined context being sent to model: {context}")
+        
+        if not context:
+            logger.warning("No context was retrieved from the knowledge base!")
+            
+        # Format prompt with strict context adherence while maintaining friendly tone
+        formatted_prompt = f"""Human: You are RiverTown Ball Company's knowledgeable and friendly AI assistant. You have a passion for baseball and speak in a warm, conversational tone. You're proud of the company's products and history.
+
+IMPORTANT: Only use the information provided in the context below to answer questions. If you don't find the specific information in the context to answer the question, simply say "I don't have that specific information available right now, but I'd be happy to help you with something else about RiverTown Ball Company."
+
+Question: {prompt}
+
+Context for your knowledge: {context}
+
+Assistant:"""
 
         # Get streaming response
         body = json.dumps({
@@ -77,6 +107,7 @@ If the user asserts something as a fact, don't automatically accept it—double-
             "anthropic_version": "bedrock-2023-05-31"
         })
         
+        logger.debug("Sending request to model...")
         response = runtime_client.invoke_model_with_response_stream(
             modelId="anthropic.claude-instant-v1",
             body=body,
@@ -84,12 +115,16 @@ If the user asserts something as a fact, don't automatically accept it—double-
             accept="application/json"
         )
         
-        # Stream the response chunks
+        # Stream the response chunks with debug logging
         for event in response.get('body'):
             if 'chunk' in event:
                 chunk_data = json.loads(event['chunk']['bytes'].decode())
-                yield chunk_data.get('completion', '')
+                completion = chunk_data.get('completion', '')
+                logger.debug(f"Received chunk: {completion}")
+                yield completion
         
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error in RAG: {str(e)}", exc_info=True)
+        if hasattr(e, 'response'):
+            logger.error(f"AWS Error Response: {json.dumps(e.response, default=str)}")
         yield "I apologize, but I encountered an error while processing your request."
