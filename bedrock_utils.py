@@ -3,6 +3,8 @@ import os
 from dotenv import load_dotenv
 import json
 import logging
+from dynamo_utils import get_customer_orders, init_dynamodb
+import re
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -33,11 +35,65 @@ def init_bedrock():
     
     return bedrock_agent_runtime, bedrock_runtime
 
+def extract_name_from_prompt(prompt: str) -> tuple[str, str] | None:
+    """Extract first and last name from prompt using regex"""
+    # Look for patterns like "show me jake rains orders" or "jake rains orders"
+    patterns = [
+        r"(?:show me|get|find|display) ([A-Za-z]+)\s+([A-Za-z]+)(?:'s)? (?:order|orders)",
+        r"([A-Za-z]+)\s+([A-Za-z]+)(?:'s)? (?:order|orders)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, prompt.lower())
+        if match:
+            return match.group(1).title(), match.group(2).title()
+    return None
+
+def format_order_table(orders: list) -> str:
+    """Format orders into a clean markdown table for Streamlit"""
+    # Create markdown table header
+    table = "\n| Order ID | Product | Quantity | Date | Total |\n"
+    table += "|----------|----------|-----------|------|--------|\n"
+    
+    # Add each order as a row
+    for order in orders:
+        # Truncate order_id if too long
+        order_id = order['order_id'][:8] + "..." if len(order['order_id']) > 8 else order['order_id']
+        
+        # Format the row
+        table += f"| {order_id} | {order['product']} | {order['quantity']} | {order['order_date']} | ${order['total_price']:.2f} |\n"
+    
+    return table
+
 def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledge_base_id="6U5LGL6AYD"):
-    """
-    Gets a streaming response using RAG with Bedrock Knowledge Base
-    """
+    """Gets a streaming response using RAG with Bedrock Knowledge Base and order lookup"""
     try:
+        # First, check if this is an order-related query
+        name_match = extract_name_from_prompt(prompt)
+        
+        if any(keyword in prompt.lower() for keyword in ['order', 'purchase', 'bought']) and name_match:
+            first_name, last_name = name_match
+            logger.info(f"Order query detected for {first_name} {last_name}")
+            
+            # Initialize DynamoDB and get orders
+            dynamodb = init_dynamodb()
+            orders = get_customer_orders(dynamodb, first_name, last_name)
+            
+            if orders:
+                response = (
+                    f"### 📦 Order History for {first_name} {last_name}\n"
+                    f"{format_order_table(orders)}\n"
+                    f"*Total Orders: {len(orders)}*"
+                )
+                yield response
+                return  # Exit here if it's an order query
+            else:
+                yield f"I couldn't find any orders for {first_name} {last_name}."
+                return  # Exit here if no orders found
+
+        # Only proceed with RAG if it's not an order query
+        logger.info(f"Processing regular RAG query: {prompt}")
+        
         logger.info(f"Starting RAG process for prompt: {prompt}")
         logger.info(f"Using knowledge base ID: {knowledge_base_id}")
         
@@ -86,14 +142,19 @@ def get_response_with_rag(agent_runtime_client, runtime_client, prompt, knowledg
         if not context:
             logger.warning("No context was retrieved from the knowledge base!")
             
-        # Format prompt with strict context adherence while maintaining friendly tone
-        formatted_prompt = f"""Human: You are RiverTown Ball Company's knowledgeable and friendly AI assistant. You have a passion for baseball and speak in a warm, conversational tone. You're proud of the company's products and history.
+        # Format prompt with a more natural, enthusiastic tone
+        formatted_prompt = f"""Human: You are RiverTown's enthusiastic product specialist! You love talking about our artisanal creations and have a warm, friendly personality. You're passionate about craftsmanship and excited to share details about our products.
 
-IMPORTANT: Only use the information provided in the context below to answer questions. If you don't find the specific information in the context to answer the question, simply say "I don't have that specific information available right now, but I'd be happy to help you with something else about RiverTown Ball Company."
+Remember to:
+- Be enthusiastic and engaging
+- Use natural, conversational language
+- Share your excitement about our products
+- Keep responses friendly and warm
+- If you don't know something specific, be honest but stay positive
 
 Question: {prompt}
 
-Context for your knowledge: {context}
+Context: {context}
 
 Assistant:"""
 
@@ -124,7 +185,5 @@ Assistant:"""
                 yield completion
         
     except Exception as e:
-        logger.error(f"Error in RAG: {str(e)}", exc_info=True)
-        if hasattr(e, 'response'):
-            logger.error(f"AWS Error Response: {json.dumps(e.response, default=str)}")
+        logger.error(f"Error in response generation: {str(e)}", exc_info=True)
         yield "I apologize, but I encountered an error while processing your request."
