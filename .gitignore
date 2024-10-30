@@ -34,3 +34,6 @@ ENV/
 # Documentation files
 v0.md
 ragsystempromptexample.md
+
+# Customer data processing scripts and files
+cusdata/
