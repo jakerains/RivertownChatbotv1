@@ -13,6 +13,32 @@ interface Message {
   sender: 'user' | 'bot';
 }
 
+const streamReader = async (response: Response, callback: (chunk: string) => void) => {
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    
+    const chunk = decoder.decode(value);
+    const lines = chunk.split('\n');
+    
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          callback(data.content);
+        } catch (e) {
+          console.error('Error parsing SSE data:', e);
+        }
+      }
+    }
+  }
+};
+
 const TypewriterText = ({ text }: { text: string }) => {
   const [displayedText, setDisplayedText] = useState('');
 
@@ -76,11 +102,12 @@ const RollingBallAnimation = () => (
 
 export default function CustomerServiceChatbot() {
   const [messages, setMessages] = useState<Message[]>([
-    { id: 1, text: "Bounce into the world of Rivertown Ball Company! 🏀🎾⚾ Ready to have a ball? How can I roll out some assistance for you today?\n\nHere are a few things you could ask about:\n\n• Our range of custom wooden balls\n• Unique design options for wooden spheres\n• Creative uses for decorative balls\n• Our ball-making process", sender: 'bot' }
+    { id: 1, text: "Bounce into the world of Rivertown Ball Company! ", sender: 'bot' }
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const floatingBalls = useMemo(() => (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
@@ -96,22 +123,69 @@ export default function CustomerServiceChatbot() {
     }
   }, [messages]);
 
-  const handleSend = () => {
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSend = async () => {
     if (input.trim()) {
-      setMessages([...messages, { id: messages.length + 1, text: input, sender: 'user' }]);
+      setMessages(prev => [...prev, { 
+        id: prev.length + 1, 
+        text: input, 
+        sender: 'user' 
+      }]);
       setInput('');
       setIsTyping(true);
-      // Simulate bot response
-      setTimeout(() => {
-        setIsTyping(false);
-        setMessages(prev => [...prev, { 
-          id: prev.length + 1, 
-          text: "Thank you for your message. Our team will get back to you shortly with a detailed response.", 
-          sender: 'bot' 
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: input,
+            csMode: true
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+
+        let currentResponse = '';
+        await streamReader(response, (chunk) => {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            if (newMessages[newMessages.length - 1]?.sender === 'bot') {
+              newMessages[newMessages.length - 1].text = chunk;
+            } else {
+              newMessages.push({
+                id: prev.length + 1,
+                text: chunk,
+                sender: 'bot'
+              });
+            }
+            return newMessages;
+          });
+        });
+
+      } catch (error) {
+        console.error('Error:', error);
+        setMessages(prev => [...prev, {
+          id: prev.length + 1,
+          text: "I apologize, but I'm having trouble connecting right now. Please try again later.",
+          sender: 'bot'
         }]);
-      }, 2000);
+      } finally {
+        setIsTyping(false);
+      }
     }
-  }
+  };
 
   return (
     <div className="relative flex flex-col h-screen bg-gradient-to-br from-amber-50 to-amber-100 overflow-hidden font-sans">
@@ -138,62 +212,50 @@ export default function CustomerServiceChatbot() {
       </header>
       
       <main className="relative z-10 flex-grow container mx-auto p-4 md:p-6 flex flex-col max-w-3xl">
-        <ScrollArea className="flex-grow mb-4 bg-white bg-opacity-70 rounded-2xl shadow-xl p-6 border border-amber-200 backdrop-blur-xl">
-          <div ref={scrollAreaRef} className="space-y-4">
-            <AnimatePresence>
-              {messages.map((message) => (
-                <motion.div
-                  key={message.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                  className={`flex ${
-                    message.sender === 'user' ? 'justify-end' : 'justify-start'
+        <ScrollArea className="flex-grow mb-4 h-[calc(100vh-12rem)] rounded-lg bg-white bg-opacity-50 backdrop-blur-sm shadow-lg p-4">
+          <div className="space-y-4">
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`flex ${
+                  message.sender === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+              >
+                <div
+                  className={`max-w-[80%] rounded-lg p-3 ${
+                    message.sender === 'user'
+                      ? 'bg-amber-500 text-white'
+                      : 'bg-white bg-opacity-70 text-gray-800'
                   }`}
                 >
-                  <motion.div
-                    className={`max-w-[80%] p-4 rounded-2xl shadow-md ${
-                      message.sender === 'user'
-                        ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white'
-                        : 'bg-white text-amber-800'
-                    }`}
-                    whileHover={{ scale: 1.02 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <TypewriterText text={message.text} />
-                  </motion.div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
+                  <TypewriterText text={message.text} />
+                </div>
+              </div>
+            ))}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="bg-white bg-opacity-70 rounded-lg p-3">
+                  <span className="animate-pulse">...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
           </div>
-          {isTyping && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="text-amber-800 flex items-center mt-4"
-            >
-              <RollingBallAnimation />
-            </motion.div>
-          )}
         </ScrollArea>
-        
-        <div className="flex space-x-2 bg-white bg-opacity-70 p-3 rounded-2xl backdrop-blur-xl shadow-lg">
+
+        <div className="relative z-10 flex gap-2">
           <Input
-            type="text"
-            placeholder="Type your message..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-            className="flex-grow bg-transparent border-amber-300 focus:ring-amber-500 focus:border-amber-500 text-amber-800 placeholder-amber-400 rounded-xl"
+            placeholder="Ask about our wooden balls..."
+            className="bg-white bg-opacity-70 backdrop-blur-sm"
           />
           <Button 
-            onClick={handleSend} 
-            className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white transition-all duration-300 rounded-xl px-6"
+            onClick={handleSend}
+            className="bg-amber-500 hover:bg-amber-600 text-white"
           >
-            <Send className="h-5 w-5 mr-2" />
-            <span className="hidden sm:inline">Send</span>
+            Send
           </Button>
         </div>
       </main>
