@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CircleDot, Send, Sparkles } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
+import { TypewriterText } from './TypewriterText'
+import { RollingBallAnimation } from './RollingBallAnimation'
 
 interface Message {
   id: number;
@@ -13,101 +15,15 @@ interface Message {
   sender: 'user' | 'bot';
 }
 
-const streamReader = async (response: Response, callback: (chunk: string) => void) => {
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\n');
-    
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6));
-          callback(data.content);
-        } catch (e) {
-          console.error('Error parsing SSE data:', e);
-        }
-      }
-    }
-  }
-};
-
-const TypewriterText = ({ text }: { text: string }) => {
-  const [displayedText, setDisplayedText] = useState('');
-
-  useEffect(() => {
-    let i = 0;
-    const intervalId = setInterval(() => {
-      setDisplayedText(text.slice(0, i));
-      i++;
-      if (i > text.length) clearInterval(intervalId);
-    }, 20);
-
-    return () => clearInterval(intervalId);
-  }, [text]);
-
-  return (
-    <span className="whitespace-pre-wrap">
-      {displayedText.split('').map((char, index) => (
-        <motion.span
-          key={index}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.1 }}
-        >
-          {char}
-        </motion.span>
-      ))}
-    </span>
-  );
-};
-
-const FloatingBall = React.memo(({ delay }: { delay: number }) => (
-  <div 
-    className="absolute rounded-full opacity-20 blur-md pointer-events-none"
-    style={{
-      width: `${Math.random() * 100 + 50}px`,
-      height: `${Math.random() * 100 + 50}px`,
-      backgroundColor: `rgb(${Math.floor(Math.random() * 56 + 160)}, ${Math.floor(Math.random() * 56 + 82)}, ${Math.floor(Math.random() * 56 + 45)})`,
-      left: `${Math.random() * 100}%`,
-      top: `${Math.random() * 100}%`,
-      animation: `float 20s infinite linear ${delay}s`
-    }}
-  />
-));
-
-const RollingBallAnimation = () => (
-  <div className="flex items-center w-full">
-    <motion.div
-      className="w-6 h-6 bg-gradient-to-br from-amber-400 to-amber-600 rounded-full shadow-lg"
-      animate={{
-        x: ["0%", "100%", "0%"],
-      }}
-      transition={{
-        duration: 2,
-        repeat: Infinity,
-        ease: "linear",
-      }}
-    />
-    <span className="ml-2 font-medium whitespace-nowrap">Rolling up a response...</span>
-  </div>
-);
-
 export default function CustomerServiceChatbot() {
   const [messages, setMessages] = useState<Message[]>([
-    { id: 1, text: "Bounce into the world of Rivertown Ball Company! ", sender: 'bot' }
+    { id: 1, text: "Bounce into the world of Rivertown Ball Company!", sender: 'bot' }
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageIdRef = useRef<number>(2);
 
   const floatingBalls = useMemo(() => (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
@@ -132,58 +48,71 @@ export default function CustomerServiceChatbot() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (input.trim()) {
-      setMessages(prev => [...prev, { 
-        id: prev.length + 1, 
-        text: input, 
-        sender: 'user' 
-      }]);
-      setInput('');
-      setIsTyping(true);
+    const trimmedInput = input.trim();
+    if (trimmedInput === '') return;
 
-      try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: input,
-            csMode: true
-          }),
-        });
+    const userMessage: Message = { 
+      id: messageIdRef.current++, 
+      text: trimmedInput, 
+      sender: 'user' 
+    };
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setIsTyping(true);
+    console.log('User sent message:', userMessage);
 
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [{
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: trimmedInput
+            }]
+          }]
+        }),
+      });
 
-        let currentResponse = '';
-        await streamReader(response, (chunk) => {
-          setMessages(prev => {
-            const newMessages = [...prev];
-            if (newMessages[newMessages.length - 1]?.sender === 'bot') {
-              newMessages[newMessages.length - 1].text = chunk;
-            } else {
-              newMessages.push({
-                id: prev.length + 1,
-                text: chunk,
-                sender: 'bot'
-              });
-            }
-            return newMessages;
-          });
-        });
-
-      } catch (error) {
-        console.error('Error:', error);
-        setMessages(prev => [...prev, {
-          id: prev.length + 1,
-          text: "I apologize, but I'm having trouble connecting right now. Please try again later.",
-          sender: 'bot'
-        }]);
-      } finally {
-        setIsTyping(false);
+      if (!response.ok) {
+        throw new Error(`Network response was not ok: ${response.statusText}`);
       }
+
+      const data = await response.json();
+      console.log('Received JSON response:', data);
+
+      if (data.content) {
+        const botMessage: Message = {
+          id: messageIdRef.current++,
+          text: data.content,
+          sender: 'bot'
+        };
+        setMessages(prev => [...prev, botMessage]);
+        console.log('Bot response added:', botMessage);
+      } else {
+        throw new Error('No content in response');
+      }
+
+    } catch (error) {
+      console.error('Error:', error);
+      const errorMessage: Message = {
+        id: messageIdRef.current++,
+        text: 'Sorry, there was an error processing your request.',
+        sender: 'bot'
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleSend();
     }
   };
 
@@ -212,7 +141,7 @@ export default function CustomerServiceChatbot() {
       </header>
       
       <main className="relative z-10 flex-grow container mx-auto p-4 md:p-6 flex flex-col max-w-3xl">
-        <ScrollArea className="flex-grow mb-4 h-[calc(100vh-12rem)] rounded-lg bg-white bg-opacity-50 backdrop-blur-sm shadow-lg p-4">
+        <ScrollArea className="flex-grow mb-4 h-[calc(100vh-12rem)] rounded-lg bg-white bg-opacity-50 backdrop-blur-sm shadow-lg p-4" ref={scrollAreaRef}>
           <div className="space-y-4">
             {messages.map((message) => (
               <div
@@ -235,7 +164,7 @@ export default function CustomerServiceChatbot() {
             {isTyping && (
               <div className="flex justify-start">
                 <div className="bg-white bg-opacity-70 rounded-lg p-3">
-                  <span className="animate-pulse">...</span>
+                  <RollingBallAnimation />
                 </div>
               </div>
             )}
@@ -247,7 +176,7 @@ export default function CustomerServiceChatbot() {
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+            onKeyPress={handleKeyPress}
             placeholder="Ask about our wooden balls..."
             className="bg-white bg-opacity-70 backdrop-blur-sm"
           />
@@ -262,3 +191,33 @@ export default function CustomerServiceChatbot() {
     </div>
   )
 }
+
+const FloatingBall = React.memo(({ delay }: { delay: number }) => (
+  <div 
+    className="absolute rounded-full opacity-20 blur-md pointer-events-none"
+    style={{
+      width: `${Math.random() * 100 + 50}px`,
+      height: `${Math.random() * 100 + 50}px`,
+      backgroundColor: `rgb(${Math.floor(Math.random() * 56 + 160)}, ${Math.floor(Math.random() * 56 + 82)}, ${Math.floor(Math.random() * 56 + 45)})`,
+      left: `${Math.random() * 100}%`,
+      top: `${Math.random() * 100}%`,
+      animation: `float 20s infinite linear ${delay}s`
+    }}
+  />
+));
+
+const RollingBallAnimation = () => (
+  <div className="flex items-center w-full">
+    <motion.div
+      className="w-6 h-6 bg-gradient-to-br from-amber-400 to-amber-600 rounded-full shadow-lg"
+      animate={{
+        x: ["0%", "100%", "0%"],
+      }}
+      transition={{
+        duration: 2,
+        repeat: Infinity,
+        ease: "linear",
+      }}
+    />
+  </div>
+);

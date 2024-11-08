@@ -1,0 +1,8 @@
+{
+    "prompt": "hello world",
+    "max_tokens_to_sample": 200,
+    "temperature": 1,
+    "top_p": 0.999,
+    "top_k": 250,
+    "stop_sequences": []
+  }  
