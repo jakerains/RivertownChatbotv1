@@ -6,25 +6,80 @@ from dynamo_utils import init_dynamodb
 bedrock_client, runtime_client = init_bedrock()
 dynamodb = init_dynamodb()
 
-# Set page config
-st.set_page_config(page_title="Amazon Bedrock Chat", page_icon="🤖")
-st.title("💬 Amazon Bedrock Chatbot with RAG")
+# Set page config with custom theme
+st.set_page_config(
+    page_title="Rivertown Ball Company",
+    page_icon="🟤",
+    layout="wide"
+)
+
+# Custom CSS for better styling
+st.markdown("""
+    <style>
+    .main {
+        background-color: #fef3c7;
+        background-image: linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%);
+    }
+    .stChatMessage {
+        background-color: rgba(255, 255, 255, 0.8) !important;
+        border-radius: 15px !important;
+        padding: 20px !important;
+        margin: 10px 0 !important;
+    }
+    .stTextInput > div > div > input {
+        background-color: rgba(255, 255, 255, 0.8);
+    }
+    h1 {
+        color: #92400e !important;
+        text-align: center;
+        padding: 20px 0;
+        font-family: 'Arial', sans-serif;
+    }
+    .stButton > button {
+        background-color: #f59e0b;
+        color: white;
+        border-radius: 10px;
+    }
+    .stButton > button:hover {
+        background-color: #d97706;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Header with logo and title
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    st.title("🟤 Rivertown Ball Company")
+    st.markdown("""
+        <p style='text-align: center; color: #92400e; margin-bottom: 30px;'>
+        Crafting Premium Wooden Balls Since 1923
+        </p>
+    """, unsafe_allow_html=True)
 
 # Initialize session state variables
 if "messages" not in st.session_state:
     st.session_state.messages = []
+    # Add welcome message
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": "Welcome to Rivertown Ball Company! How can I help you today?"
+    })
 if "phone_number" not in st.session_state:
     st.session_state.phone_number = None
 if "cs_mode" not in st.session_state:
     st.session_state.cs_mode = False
 
+# Create a container for chat messages
+chat_container = st.container()
+
 # Display chat messages from history on app rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+with chat_container:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
 # Accept user input
-if prompt := st.chat_input("What would you like to know?"):
+if prompt := st.chat_input("Ask about our wooden balls..."):
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
     
@@ -92,9 +147,19 @@ if prompt := st.chat_input("What would you like to know?"):
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-# Add a reset button
-if st.sidebar.button("Reset Chat"):
-    st.session_state.messages = []
-    st.session_state.phone_number = None
-    st.session_state.cs_mode = False
-    st.rerun()
+# Sidebar with reset button and additional info
+with st.sidebar:
+    st.markdown("### Chat Controls")
+    if st.button("Reset Chat", key="reset"):
+        st.session_state.messages = []
+        st.session_state.phone_number = None
+        st.session_state.cs_mode = False
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("""
+        ### About Us
+        Rivertown Ball Company has been crafting premium wooden balls 
+        for over a century. Our commitment to quality and craftsmanship 
+        makes us the leading choice for wooden ball products.
+    """)

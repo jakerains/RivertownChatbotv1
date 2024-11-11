@@ -231,7 +231,7 @@ def handle_customer_service_request(prompt: str, phone_number: str = None) -> st
             # Initiate the call
             data = {
                 "phone_number": formatted_phone,
-                "task": """You are Sara from Rivertown Ball Company following up on a chat conversation. 
+                "task": """You are Sara from Rivertown Ball Company following up on a chat conversation they were just having, looking to ask them if they have any questions you can help with. 
                 Start the call with: "Hi, this is Sara from Rivertown Ball Company!"
                 Be warm, friendly and helpful while assisting with their questions about our artisanal wooden balls.
                 Make them feel valued and excited about our products!""",
