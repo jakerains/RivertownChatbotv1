@@ -24,7 +24,7 @@ def init_bedrock():
         service_name="bedrock-runtime",
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
+        region_name="us-east-1"
     )
     
     # Initialize bedrock-agent-runtime client for knowledge base operations
@@ -32,7 +32,7 @@ def init_bedrock():
         service_name="bedrock-agent-runtime",
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
+        region_name="us-east-1"
     )
     
     return bedrock_agent_runtime, bedrock_runtime
