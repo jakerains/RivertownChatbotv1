@@ -19,20 +19,26 @@ def init_bedrock():
     """Initialize and return Bedrock clients"""
     load_dotenv('.env.local')
     
+    # Set default region if not specified in environment
+    region = os.getenv('AWS_REGION', 'us-east-1')
+    
+    # Common AWS credentials
+    aws_config = {
+        'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
+        'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+        'region_name': region
+    }
+    
     # Initialize bedrock-runtime client
     bedrock_runtime = boto3.client(
         service_name="bedrock-runtime",
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name="us-east-1"
+        **aws_config
     )
     
     # Initialize bedrock-agent-runtime client for knowledge base operations
     bedrock_agent_runtime = boto3.client(
         service_name="bedrock-agent-runtime",
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name="us-east-1"
+        **aws_config
     )
     
     return bedrock_agent_runtime, bedrock_runtime
